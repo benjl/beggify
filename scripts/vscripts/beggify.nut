@@ -4,9 +4,6 @@ PrecacheModel("models/weapons/c_models/c_soldier_animations_og.mdl")
 PrecacheSound("weapons/doom_rocket_launcher.wav")
 PrecacheSound("weapons/dumpster_rocket_reload.wav")
 
-::BeggarsVM <- {}
-::RLChoice <- {}
-
 enum VIEWMODELS {
     STOCK = "models/weapons/w_models/w_rocketlauncher.mdl",
     BEGGARS = "models/weapons/c_models/c_dumpster_device/c_dumpster_device.mdl",
@@ -44,55 +41,24 @@ enum VIEWMODELS {
     tf_weapon_rocketlauncher_airstrike = "FORBIDDEN"
 }
 
-// First time cleanup, if reloading the script
-local garbage = null
-while (garbage = Entities.FindByClassname(garbage, "tf_wearable_vm")) {
-    if (garbage.GetName().find("fake_beggars_entity") != null) {
-        // printl("Killed " + garbage)
-        garbage.Kill()
-    }
-}
-
-::CTFPlayer.deleteVM <- function() {
-    local garbo = null
-    while (garbo = Entities.FindByName(garbo, "fake_beggars_" + this)) {
-        // printl("Deleted " + garbo)
-        garbo.Kill()
-    }
-    if (this in BeggarsVM) {
-        local rl = this.getRocketLauncher()
-        if (rl != null) {
-            AddThinkToEnt(rl, null)
-        }
-        if (this in BeggarsVM) { delete BeggarsVM[this] }
-    }
-}
-
-// Delete viewmodels that don't belong to anyone
 function cleanup() {
-    foreach (k in BeggarsVM) {
-        if (k == null) {
-            BeggarsVM[k].GetMoveParent().Kill()
-            BeggarsVM[k].Kill()
-            delete BeggarsVM[k]
-        }
-    }
-    foreach (k in RLChoice) {
-        if (k == null) {
-            delete RLChoice[k]
-        }
-    }
     local garbage = null
     while (garbage = Entities.FindByClassname(garbage, "tf_wearable_vm")) {
-        if (garbage.GetName().find("fake_beggars_") != null) {
-            if (NetProps.GetPropEntity(garbage, "m_hOwnerEntity") == null) {
-                // printl("Killed " + garbage)
-                garbage.Kill()
+        if (garbage.ValidateScriptScope()) {
+            local garbage_scope = garbage.GetScriptScope()
+            if ("viewmodelWeapon" in garbage_scope) {
+                try {
+                    garbage_scope["viewmodelWeapon"].GetClassname()
+                } catch (err) {
+                    if (err == "Accessed null instance") {
+                        // printl("Removed " + garbage)
+                        garbage.Kill()
+                    }
+                }
             }
         }
+    }
 }
-}
-cleanup()
 
 // Returns the player's rocket launcher entity if they have one. If they have a
 // forbidden weapon (dh, mangler, airstrike) then freeze them in place
@@ -102,31 +68,15 @@ cleanup()
         wpn = NetProps.GetPropEntityArray(this, "m_hMyWeapons", i)
         if (wpn != null) {
             if (wpn.GetClassname() == "tf_weapon_rocketlauncher") {
+                this.unpunish()
                 return wpn
             } else if (wpn.GetClassname() in FORBIDDEN_WEAPONS) {
                 this.punish()
-                return
+                return null
             }
         }
     }
     return null
-}
-
-// On death, we want to clear the custom beggars stuff because it complains about things being null if we don't
-// function OnGameEvent_player_death(params) {
-//     if ("userid" in params) {
-//         local plr = GetPlayerFromUserID(params["userid"])
-//         if (plr in RLChoice) { delete RLChoice[plr] }
-//     }
-// }
-
-// Changing class in a spawn room doesn't trigger the player_death or inv application afaik
-function OnGameEvent_player_changeclass(params) {
-    if ("userid" in params) {
-        local plr = GetPlayerFromUserID(params["userid"])
-        if (plr in RLChoice) { delete RLChoice[plr] }
-        plr.createVM()
-    }
 }
 
 // This is just to immediately detect forbidden launchers
@@ -134,7 +84,6 @@ function OnGameEvent_player_spawn(params) {
     if ("userid" in params) {
         local plr = GetPlayerFromUserID(params["userid"])
         plr.getRocketLauncher()
-        plr.createVM()
     }
 }
 
@@ -159,23 +108,18 @@ function OnGameEvent_post_inventory_application(params) {
             local rl = plr.getRocketLauncher()
             if (rl == null) {
                 return 
-            } else {
-                plr.unpunish() // Free the player from the grip of doom since they have the correct rocket launcher equipped
             }
-            local itemidx = NetProps.GetPropInt(rl, "m_AttributeManager.m_Item.m_iItemDefinitionIndex")
-            printl("idx: " + itemidx)
-            if (itemidx == 513) {
-                RLChoice[plr] <- 513
-            } else if (itemidx == 730) {
-                if (!(plr in RLChoice)) {
-                    RLChoice[plr] <- 730
+            if (rl.ValidateScriptScope()) {
+                local rl_scope = rl.GetScriptScope()
+                local itemidx = NetProps.GetPropInt(rl, "m_AttributeManager.m_Item.m_iItemDefinitionIndex")
+                if (!("equippedIndex" in rl_scope)) {
+                    if (!(itemidx in RL_VIEWMODELS)) {
+                        itemidx = 730
+                    }
+                    rl_scope["equippedIndex"] <- itemidx
                 }
-            } else if (itemidx in RL_VIEWMODELS) {
-                RLChoice[plr] <- itemidx
-            } else {
-                RLChoice[plr] <- 730
+                plr.giveBeggars()
             }
-            plr.giveBeggars()
         }
     }
 }
@@ -204,57 +148,65 @@ __CollectGameEventCallbacks(this)
 // replaced with original animations. This is the best way to get original animations on another rocket launcher
 // as far as I know.
 ::CTFPlayer.createVM <- function() {
-    if (!(this in RLChoice)) {
-        RLChoice[this] <- 730
-    }
-    this.deleteVM()
     local hands = NetProps.GetPropEntity(this, "m_hViewModel")
     local wpn = this.getRocketLauncher()
     if (wpn == null) { return }
-    local new_hands = null
-    new_hands = Entities.CreateByClassname("tf_wearable_vm")
-    new_hands.SetAbsOrigin(this.GetLocalOrigin())
-    new_hands.SetAbsAngles(this.GetLocalAngles())
-    NetProps.SetPropEntity(new_hands, "m_hOwnerEntity", this)
-    NetProps.SetPropInt(new_hands, "m_iTeamNum", this.GetTeam())
-    NetProps.SetPropInt(new_hands, "m_Collision.m_usSolidFlags", Constants.FSolid.FSOLID_NOT_SOLID)
-    NetProps.SetPropInt(new_hands, "m_CollisionGroup", 11)
-    NetProps.SetPropInt(new_hands, "m_fEffects", 129)
-    NetProps.SetPropInt(new_hands, "m_AttributeManager.m_Item.m_iEntityQuality", 0)
-	NetProps.SetPropInt(new_hands, "m_AttributeManager.m_Item.m_iEntityLevel", 1)
-	NetProps.SetPropInt(new_hands, "m_AttributeManager.m_Item.m_bInitialized", 1)
-    if (RLChoice[this] == 513) {
-        NetProps.SetPropInt(new_hands, "m_nModelIndex", GetModelIndex("models/weapons/c_models/c_soldier_arms_og.mdl"))
-    } else {
-        NetProps.SetPropInt(new_hands, "m_nModelIndex", GetModelIndex("models/weapons/c_models/c_soldier_arms.mdl"))
-    }
-    new_hands.__KeyValueFromString("targetname", "fake_beggars_" + this)
-    Entities.DispatchSpawn(new_hands)
-    DoEntFire("!self", "SetParent", "!activator", 0, hands, new_hands)
-    new_hands.DisableDraw()
-
-    local new_vm = null
-    new_vm = Entities.CreateByClassname("tf_wearable_vm")
-    new_vm.SetAbsOrigin(this.GetLocalOrigin())
-    new_vm.SetAbsAngles(this.GetLocalAngles())
-    NetProps.SetPropEntity(new_vm, "m_hOwnerEntity", this)
-    NetProps.SetPropInt(new_vm, "m_iTeamNum", this.GetTeam())
-    NetProps.SetPropInt(new_vm, "m_Collision.m_usSolidFlags", Constants.FSolid.FSOLID_NOT_SOLID)
-    NetProps.SetPropInt(new_vm, "m_CollisionGroup", 11)
-    NetProps.SetPropInt(new_vm, "m_fEffects", 129)
-    NetProps.SetPropInt(new_vm, "m_AttributeManager.m_Item.m_iEntityQuality", 0)
-    NetProps.SetPropInt(new_vm, "m_AttributeManager.m_Item.m_iEntityLevel", 1)
-    NetProps.SetPropInt(new_vm, "m_AttributeManager.m_Item.m_bInitialized", 1)
-    new_vm.SetModelSimple(RL_VIEWMODELS[RLChoice[this]])
-    NetProps.SetPropEntity(new_vm, "m_hWeaponAssociatedWith", wpn)
-    NetProps.SetPropEntity(wpn, "m_hExtraWearableViewModel", new_vm)
-    new_vm.__KeyValueFromString("targetname", "fake_beggars_" + this)
-    Entities.DispatchSpawn(new_vm)
-    DoEntFire("!self", "SetParent", "!activator", 0, new_hands, new_vm)
-
     if (wpn.ValidateScriptScope()) {
-        local wepscript = wpn.GetScriptScope()
-        wepscript["modelSwap"] <- function() {
+        local wpn_scope = wpn.GetScriptScope()
+        if (wpn_scope["equippedIndex"] == 730) { // We don't need a custom VM if it's already beggars
+            wpn_scope["customVM"] <- null
+            wpn_scope["customVMHands"] <- null
+            return
+        }
+        if ("customVM" in wpn_scope) { // We don't need to recreate the VMs if they exist already
+            if (wpn_scope["customVM"] != null) {
+                return
+            }
+        }
+        local new_hands = null
+        new_hands = Entities.CreateByClassname("tf_wearable_vm")
+        new_hands.ValidateScriptScope()
+        local new_hands_scope = new_hands.GetScriptScope()
+        new_hands_scope["viewmodelWeapon"] <- wpn
+        new_hands.SetAbsOrigin(this.GetLocalOrigin())
+        new_hands.SetAbsAngles(this.GetLocalAngles())
+        NetProps.SetPropEntity(new_hands, "m_hOwnerEntity", this)
+        NetProps.SetPropInt(new_hands, "m_iTeamNum", this.GetTeam())
+        NetProps.SetPropInt(new_hands, "m_Collision.m_usSolidFlags", Constants.FSolid.FSOLID_NOT_SOLID)
+        NetProps.SetPropInt(new_hands, "m_CollisionGroup", 11)
+        NetProps.SetPropInt(new_hands, "m_fEffects", 129)
+        NetProps.SetPropInt(new_hands, "m_AttributeManager.m_Item.m_iEntityQuality", 0)
+        NetProps.SetPropInt(new_hands, "m_AttributeManager.m_Item.m_iEntityLevel", 1)
+        NetProps.SetPropInt(new_hands, "m_AttributeManager.m_Item.m_bInitialized", 1)
+        NetProps.SetPropInt(new_hands, "m_nModelIndex", GetModelIndex("models/weapons/c_models/c_soldier_arms.mdl"))
+        new_hands.__KeyValueFromString("targetname", "fake_beggars_" + this)
+        Entities.DispatchSpawn(new_hands)
+        DoEntFire("!self", "SetParent", "!activator", 0, hands, new_hands)
+        new_hands.DisableDraw()
+
+        local new_vm = null
+        new_vm = Entities.CreateByClassname("tf_wearable_vm")
+        new_vm.ValidateScriptScope()
+        local new_vm_scope = new_vm.GetScriptScope()
+        new_vm_scope["viewmodelWeapon"] <- wpn
+        new_vm.SetAbsOrigin(this.GetLocalOrigin())
+        new_vm.SetAbsAngles(this.GetLocalAngles())
+        NetProps.SetPropEntity(new_vm, "m_hOwnerEntity", this)
+        NetProps.SetPropInt(new_vm, "m_iTeamNum", this.GetTeam())
+        NetProps.SetPropInt(new_vm, "m_Collision.m_usSolidFlags", Constants.FSolid.FSOLID_NOT_SOLID)
+        NetProps.SetPropInt(new_vm, "m_CollisionGroup", 11)
+        NetProps.SetPropInt(new_vm, "m_fEffects", 129)
+        NetProps.SetPropInt(new_vm, "m_AttributeManager.m_Item.m_iEntityQuality", 0)
+        NetProps.SetPropInt(new_vm, "m_AttributeManager.m_Item.m_iEntityLevel", 1)
+        NetProps.SetPropInt(new_vm, "m_AttributeManager.m_Item.m_bInitialized", 1)
+        new_vm.SetModelSimple(RL_VIEWMODELS[wpn_scope["equippedIndex"]])
+        NetProps.SetPropEntity(new_vm, "m_hWeaponAssociatedWith", wpn)
+        NetProps.SetPropEntity(wpn, "m_hExtraWearableViewModel", new_vm)
+        new_vm.__KeyValueFromString("targetname", "fake_beggars_" + this)
+        Entities.DispatchSpawn(new_vm)
+        DoEntFire("!self", "SetParent", "!activator", 0, new_hands, new_vm)
+
+        wpn_scope["modelSwap"] <- function() {
             local owner = NetProps.GetPropEntity(self, "m_hOwner")
             if (owner == null) {
                 return 1
@@ -263,11 +215,11 @@ __CollectGameEventCallbacks(this)
             if (wpn == null) {
                 return 1
             }
-            if (RLChoice[owner] == 513) {
+            if (this["equippedIndex"] == 513) {
                 wpn.SetCustomViewModel("models/weapons/c_models/c_soldier_arms_og.mdl")
             }
             local oldhands = NetProps.GetPropEntity(owner, "m_hViewmodel")
-            local custom_vm = BeggarsVM[owner]
+            local custom_vm = this["customVM"]
             if (wpn.GetClassname() == "tf_weapon_rocketlauncher") {
                 custom_vm.EnableDraw()
                 oldhands.DisableDraw()
@@ -278,7 +230,8 @@ __CollectGameEventCallbacks(this)
             return 0.015
         }
         AddThinkToEnt(wpn, "modelSwap")
-    }
 
-    BeggarsVM[this] <- new_vm
+        wpn_scope["customVM"] <- new_vm
+        wpn_scope["customVMHands"] <- new_hands
+    }
 }
