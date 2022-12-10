@@ -131,7 +131,8 @@ __CollectGameEventCallbacks(this)
 ::CTFPlayer.giveBeggars <- function() {
     local wpn = this.getRocketLauncher()
     if (wpn == null) { return }
-    wpn.RemoveAttribute("clip size penalty") // Black box has this
+    AddThinkToEnt(this, null)
+
     wpn.AddAttribute("ammo regen", 1, 1)
     wpn.AddAttribute("auto fires full clip", 1, 1)
     wpn.AddAttribute("can overload", 1, 1)
@@ -141,6 +142,45 @@ __CollectGameEventCallbacks(this)
     wpn.AddAttribute("projectile spread angle penalty", 3, 1)
     NetProps.SetPropInt(wpn, "m_iClip1", 0)
     NetProps.SetPropInt(wpn, "m_AttributeManager.m_Item.m_iItemDefinitionIndex", 730)
+    // The next part adds a special think function to the player that checks if the player is overloading or not.
+    // Whenever the player is in an overloading state, we disable centerfire so rockets overload like normal beggars
+    // Otherwise, enable centerfire so regular rockets are centered.
+    local wpn_scope = wpn.GetScriptScope()
+    if (wpn_scope["equippedIndex"] == 513) {
+        this.ValidateScriptScope()
+        local plr_sc = this.GetScriptScope()
+        plr_sc["isOverloading"] <- false
+        plr_sc["lastM1State"] <- false
+        plr_sc["stockOverloads"] <- function() {
+            local buttons = NetProps.GetPropInt(self, "m_nButtons")
+            local firing = buttons & Constants.FButtons.IN_ATTACK
+            local wpn = self.GetActiveWeapon()
+            if (wpn == self.getRocketLauncher()) {
+                if (firing) {
+                    if (this["isOverloading"]) {
+                        if (wpn.Clip1() > 0) {
+                            wpn.AddAttribute("centerfire projectile", 0, 0)
+                        } else {
+                            wpn.AddAttribute("centerfire projectile", 1, 1)
+                            this["isOverloading"] = false
+                        }
+                    } else if (wpn.Clip1() >= wpn.GetMaxClip1() || (wpn.Clip1() > 0 && !wpn.GetPrimaryAmmoCount() == 0)) {
+                        if (this["lastM1State"]) { // Fixes an issue where rockets weren't centered if you only let go of m1 for one frame
+                            this["isOverloading"] = true
+                            wpn.AddAttribute("centerfire projectile", 0, 0)
+                        }
+                    }
+                } else {
+                    this["isOverloading"] = false
+                    wpn.AddAttribute("centerfire projectile", 1, 1)
+                }
+                // printl("firing: " + firing + " lastM1State: " + this["lastM1State"] + " ammo: " + wpn.Clip1() + " isOverloading: " + this["isOverloading"])
+            }
+            this["lastM1State"] = firing
+            return 0.015
+        }
+        AddThinkToEnt(this, "stockOverloads")
+    }
     this.createVM()
 }
 
